@@ -22,7 +22,7 @@ Here's a step by step guide to implement the method:
 Make sure you have Anaconda or Miniconda installed
 
 First create your conda environment:
-Reconstructing movement path from sequences of predicted toroidal locations
+
 ```
 conda env create -n torch python=3.8
 
