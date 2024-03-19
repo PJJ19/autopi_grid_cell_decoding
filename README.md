@@ -59,3 +59,13 @@ If not:
 conda install pytorch torchvision torchaudio cpuonly -c pytorch
 
 ```
+
+
+
+<li>4. Jupyter notebook </li>
+
+
+```
+conda install -c conda-forge notebook
+
+```
