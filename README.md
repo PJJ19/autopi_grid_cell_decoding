@@ -24,7 +24,7 @@ Make sure you have Anaconda or Miniconda installed
 First create your conda environment:
 
 ```
-conda env create -n torch python=3.8
+conda create -n torch python=3.8
 
 conda activate torch
 ```
