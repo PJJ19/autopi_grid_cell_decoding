@@ -1,2 +1,2 @@
-# autopi_grid_cell_decoding
+# AutoPI grid cell decoding
 Explanation of the decoding method used for the autopi project
