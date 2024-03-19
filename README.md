@@ -49,7 +49,7 @@ Install [Pytorch](https://pytorch.org/get-started/locally/)
 If you have GPU on your computer:
 
 ```
-conda install pytorch torchvision torchaudio pytorch-cuda=11.8 -c pytorch -c nvidia
+conda install pytorch torchvision torchaudio pytorch-cuda -c pytorch -c nvidia
 
 ```
 
