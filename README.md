@@ -5,12 +5,12 @@ Explanation of the decoding method used for the autopi project
 
 <li>Installation</li>
 <li>
-  Notebooks for method explanation
-  <ol>Simulating grid cell spike trains</ol>
-  <ol>Estimating grid orientation and spacing</ol>
-  <ol>Transforming 2D Cartesian coordinates into 2D toroidal coordinates</ol>
-  <ol>Predicting toroidal location based on grid cell activity</ol>
-  <ol>Reconstructing movement path from sequences of predicted toroidal locations</ol>
+  Notebooks for method explanation:
+  <ol>1.Simulating grid cell spike trains</ol>
+  <ol>2.Estimating grid orientation and spacing</ol>
+  <ol>3.Transforming 2D Cartesian coordinates into 2D toroidal coordinates</ol>
+  <ol>4.Predicting toroidal location based on grid cell activity</ol>
+  <ol>5.Reconstructing movement path from sequences of predicted toroidal locations</ol>
 </li>
 
 ## Installation
