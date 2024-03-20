@@ -1,6 +1,18 @@
 import cv2
 import torch
 import numpy as np
+from spikeA.Neuron import Simulated_place_cell, Simulated_grid_cell
+from scipy.stats import wilcoxon, pearsonr
+from scipy.signal import find_peaks
+import matplotlib.pyplot as plt
+
+# Location of animal position files
+firstRF = "../data/jp451_lstm_firstRF.npy"
+lastRF = "../data/jp451_lstm_lastRF.npy"
+
+# GLOBAL VARIABLES
+GLOBALFONTSIZE = 12
+plt.rcParams['figure.dpi'] = 100
 
 def plotMap(ax,myMap,title="",titleY=0.95,titleFontSize=10,transpose=True,cmap="jet",vmin=0,alpha=1):
     """
@@ -283,7 +295,7 @@ def fit_grid_parameter_from_grid_cell_activity(n,ap,apSim,cm_per_bin = 3,xy_rang
     autoStackReal = np.expand_dims(refAuto,0)
     autoStackSim = np.expand_dims(refAutoSgc,0)
     
-    rot,cor = rotation_correlations(autoStackReal,autoStackSim,minRotation=0,maxRotation=np.pi+0.0174,nRotations=180+1)
+    rot,cor = rotation_correlations(autoStackReal,autoStackSim,minRotation=0,maxRotation=np.pi+0.174,nRotations=180+10)
     peak_indices,_ = find_peaks(cor,height=0.3,distance=10)
     deltas = rot[peak_indices]
     
