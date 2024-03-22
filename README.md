@@ -50,14 +50,12 @@ If you have GPU on your computer:
 
 ```
 conda install pytorch torchvision torchaudio pytorch-cuda -c pytorch -c nvidia
-
 ```
 
 If not:
 
 ```
 conda install pytorch torchvision torchaudio cpuonly -c pytorch
-
 ```
 
 
