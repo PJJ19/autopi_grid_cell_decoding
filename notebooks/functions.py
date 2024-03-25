@@ -571,6 +571,8 @@ def find_grid_cell_parameters(neuron_list,save=False):
     gcSpacing = [n.spatial_properties.grid_info()[0] for n in neuron_list]
     gcOrientation = [n.spatial_properties.grid_info()[1] for n in neuron_list]
     gcPeakLocation = [n.spatial_properties.firing_rate_map_peak_location() for n in neuron_list]
+
+    print(n.spatial_properties.grid_info())
     
     # show the firing rate maps
     print("Firing rate maps used to find grid cell parameters")
@@ -948,3 +950,22 @@ def mvtFromAngle(ga,cm_per_radian):
     dga = np.where(dga<-np.pi,dga+2*np.pi,dga) # correct for negative jumps
     dga = dga* cm_per_radian # transform from change in angle to change in cm
     return dga
+
+
+def plot_spatial_autocorrelation(ax,sgc):
+    sgc.spatial_properties.spatial_autocorrelation_map_2d()
+    im = ax.imshow(sgc.spatial_properties.spatial_autocorrelation_map, cmap='jet')
+
+    sgc.spatial_properties.calculate_doughnut()
+    grid_score = sgc.spatial_properties.grid_score()
+    ax.set_title("Grid score: {:.3}".format(grid_score))
+    ax.set_xticklabels([])
+    ax.set_yticklabels([])
+    ax.set_xticks([])
+    ax.set_yticks([])
+
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.spines['bottom'].set_visible(False)
+    ax.spines['left'].set_visible(False)
+    ax.set_xlabel('Autocorrelation')
