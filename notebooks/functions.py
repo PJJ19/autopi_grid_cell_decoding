@@ -5,6 +5,11 @@ from spikeA.Neuron import Simulated_place_cell, Simulated_grid_cell
 from scipy.stats import wilcoxon, pearsonr
 from scipy.signal import find_peaks
 import matplotlib.pyplot as plt
+from tqdm import tqdm
+import pickle
+import datetime
+import pandas as pd
+import os
 
 # Location of animal position files
 firstRF = "../data/jp451_lstm_firstRF.npy"
@@ -138,6 +143,8 @@ def training_loop_grid_parameters(n_epochs, model, optimizer, loss_fn, X,y,verbo
             if verbose:
                 print("Final loss:", loss)
             return loss
+
+
     return loss
 
 
@@ -546,3 +553,398 @@ def rotation_correlations(ccStack1,ccStack2,minRotation=-np.pi,maxRotation=np.pi
 
     peaks = np.mean(corrValues,axis=1)
     return rotations, peaks
+
+
+def find_grid_cell_parameters(neuron_list,save=False):
+    cm_per_bin = 3
+    xy_range=np.array([[-50,-90],[50,60]])
+    
+
+    # Calculate firing rate maps and spatial autocorrelation to have a reasonable estimate of the grid parameters
+    for n in neuron_list:
+        n.spatial_properties.firing_rate_map_2d(cm_per_bin =cm_per_bin, smoothing_sigma_cm = 5, smoothing=True,xy_range=xy_range)
+        n.spatial_properties.spatial_autocorrelation_map_2d(min_n_for_correlation=50,invalid_to_nan=True)
+        n.spatial_properties.grid_score()
+        n.spike_train.instantaneous_firing_rate(bin_size_sec = 0.02,sigma=1,outside_interval_solution="remove")
+    
+    # our rough estimate of spacing, orientation and offset, used as a starting point
+    gcSpacing = [n.spatial_properties.grid_info()[0] for n in neuron_list]
+    gcOrientation = [n.spatial_properties.grid_info()[1] for n in neuron_list]
+    gcPeakLocation = [n.spatial_properties.firing_rate_map_peak_location() for n in neuron_list]
+    
+    # show the firing rate maps
+    print("Firing rate maps used to find grid cell parameters")
+    rowSize,colSize= 1.6,1.6
+    ncols=6
+    nrows=int(np.ceil(len(neuron_list)/ncols))
+    fig = plt.figure(figsize=(ncols*colSize, nrows*rowSize), constrained_layout=True) # create a figure
+    mainSpec = fig.add_gridspec(ncols=ncols, nrows=nrows)
+    for i,n in enumerate(neuron_list):
+        c= int(i % ncols)
+        r= int(i / ncols)
+        ax = fig.add_subplot(mainSpec[r,c])
+        plotMap(ax,n.spatial_properties.firing_rate_map,title="{} - {:.2f} Hz".format(n.name,np.nanmax(n.spatial_properties.firing_rate_map)),titleY=0.95,titleFontSize=9,transpose=True,cmap="jet",vmin=0)
+        xy,grid_peak_location =  gcPeakLocation[i]
+        ax.scatter(xy[0],xy[1],color="black", s = 35)
+        ax.scatter(xy[0],xy[1],color="red", s = 10)
+    
+    # plot the distribution of spacing
+    rowSize,colSize= 1.8,1.8
+    ncols=1
+    nrows=1
+    fig = plt.figure(figsize=(ncols*colSize, nrows*rowSize), constrained_layout=True) # create a figure
+    mainSpec = fig.add_gridspec(ncols=ncols, nrows=nrows)
+
+    ax = fig.add_subplot(mainSpec[0])
+    ax.hist(gcSpacing)
+    ax.set_xlim(30,50)
+    ax.set_xlabel("Grid spacing (cm)")
+    ax.set_ylabel("Neurons")
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+
+    
+
+    # do the model fitting, the function is in the file function of the path_reconstruction directory
+    res = [fit_grid_parameter_from_grid_cell_activity(n,n.ap,n.ap) for n in tqdm(neuron_list)]
+
+    if save:
+        #save the results into a file for quick access
+        fn = "../data/grid_cell_parameters.pkl"
+        print("Saving:",fn)
+        with open(fn, 'wb') as handle:
+            pickle.dump(res, handle)
+    
+    
+    return res
+
+
+def poseToGridSpace(pose,period=np.array([40,40,40]),orientation=np.array([0,np.pi/3,np.pi/3*2])):
+    """
+    Function to transfrom the x,y position of the mouse to 
+    a position within the internal representation of grid cells. 
+    
+    The internal representation is 3 angles (x,y,z) which represents the distance along 3 axes
+    The 3 axes are at 60 degrees of each other.
+    To get from distance to angle, we get the modulo of the distance and the underlying spacing.
+    Then set the range to -np.pi to pi. 
+    Each angle is represented by a cos and sin component to avoid discontinuity (0-360).
+    
+    Arguments:
+    pose: 2D numpy array with x and y position, 2 columns
+    period: spacing of the underlying band pattern
+    orientation: angle of the 3 main axes of the grid pattern
+    """
+    
+    Rx0 = np.array([[np.cos(-orientation[0])],[-np.sin(-orientation[0])]]) # minus sign because we want to rotate the inverse of the angle to bring it back to 1,0 
+    Rx1 = np.array([[np.cos(-orientation[1])],[-np.sin(-orientation[1])]])
+    Rx2 = np.array([[np.cos(-orientation[2])],[-np.sin(-orientation[2])]])
+    
+    d0 = pose @ Rx0
+    d1 = pose @ Rx1
+    d2 = pose @ Rx2
+        
+    c0 = (d0 % period[0])/period[0] * np.pi*2 - np.pi
+    c1 = (d1 % period[1])/period[1] * np.pi*2 - np.pi
+    c2 = (d2 % period[2])/period[2] * np.pi*2 - np.pi
+    
+    c0c = np.cos(c0)
+    c0s = np.sin(c0)
+    c1c = np.cos(c1)
+    c1s = np.sin(c1)
+    c2c = np.cos(c2)
+    c2s = np.sin(c2)
+    
+    return np.stack([c0c.flatten(),
+                     c0s.flatten(),
+                     c1c.flatten(),
+                     c1s.flatten(),
+                     c2c.flatten(),
+                     c2s.flatten()]).T
+
+class NeuralDataset(torch.utils.data.Dataset):
+    """
+    Represent our pose and neural data.
+    
+    """
+    def __init__(self, ifr, pose, time, seq_length,ifr_normalization_means=None,ifr_normalization_stds=None):
+        """
+        ifr: instantaneous firing rate
+        pose: position of the animal
+        seq_length: length of the data passed to the network
+        """
+        super(NeuralDataset, self).__init__()
+        self.ifr = ifr.astype(np.float32)
+        self.pose = pose.astype(np.float32)
+        self.time = time.astype(np.float32)
+        self.seq_length = seq_length
+        
+        self.ifr_normalization_means=ifr_normalization_means
+        self.ifr_normalization_stds=ifr_normalization_stds
+        
+        self.normalize_ifr()
+        
+        self.validIndices = np.argwhere(~np.isnan(self.pose[:,0]))
+        self.validIndices = self.validIndices[self.validIndices>seq_length] # make sure we have enough neural dat leading to the pose
+   
+        
+    def normalize_ifr(self):
+        """
+        Set the mean of each neuron to 0 and std to 1
+        Neural networks work best with inputs in this range
+        Set maximal values at -5.0 and 5 to avoid extreme data points
+        
+        ###########
+        # warning #
+        ###########
+        
+        In some situation, you should use the normalization of the training set to normalize your test set.
+        For instance, if the test set is very short, you might have a very poor estimate of the mean and std, or the std might be undefined if a neuron is silent.
+        """
+        if self.ifr_normalization_means is None:
+            self.ifr_normalization_means = self.ifr.mean(axis=0)
+            self.ifr_normalization_stds = self.ifr.std(axis=0)
+            
+        self.ifr = (self.ifr-np.expand_dims(self.ifr_normalization_means,0))/np.expand_dims(self.ifr_normalization_stds,axis=0)
+        self.ifr[self.ifr> 5.0] = 5.0
+        self.ifr[self.ifr< -5.0] = -5.0
+        
+        
+    def __len__(self):
+        return len(self.validIndices)
+    
+    def __getitem__(self,index):
+        """
+        Function to get an item from the dataset
+        
+        Returns pose, neural data
+        
+        """
+        neuralData = self.ifr[self.validIndices[index]-self.seq_length:self.validIndices[index],:]
+        pose = self.pose[self.validIndices[index]:self.validIndices[index]+1,:] #
+        time = self.time[self.validIndices[index]:self.validIndices[index]+1]
+        
+        return torch.from_numpy(neuralData), torch.from_numpy(pose).squeeze(), torch.from_numpy(time) # we only need one channel for the mask
+
+
+
+class LSTM(torch.nn.Module):
+    def __init__(self, input_size, hidden_size, num_layers, num_outputs, sequence_length,device):
+        super(LSTM,self).__init__()
+        """
+        For more information about nn.LSTM -> https://pytorch.org/docs/stable/generated/torch.nn.LSTM.html
+        """
+        
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        self.lstm = torch.nn.LSTM(input_size,hidden_size, num_layers, batch_first=True)
+        # input : batch_size x sequence x features
+        self.device = device
+        self.fc = torch.nn.Linear(hidden_size*sequence_length, num_outputs) # if you onely want to use the last hidden state (hidden_state,num_classes)
+        
+    def forward(self,x):
+        
+        h0 =  torch.zeros(self.num_layers,x.size(0), self.hidden_size).to(self.device)
+        c0 =  torch.zeros(self.num_layers,x.size(0), self.hidden_size).to(self.device) 
+        out, _ = self.lstm(x,(h0,c0))
+        out = out.reshape(out.shape[0], -1)
+        out = self.fc(out) #if you want to use only the last hidden state, remove previous line, # out = self.fc(out[:,-1,:])
+        
+        return out
+
+def lossOnTestDataset(model,test_data_loader,device,loss_fn):
+    model.eval()
+    loss_test = 0
+    with torch.no_grad():
+        for imgs, labels, time in test_data_loader: # mini-batches with data loader, imgs is sequences of brain activity, labels is position of mouse
+            imgs = imgs.to(device=device) # batch x chan x 28 x 28 to batch x 28 x 28
+            labels = labels.to(device=device)
+            outputs = model(imgs)
+            loss = loss_fn(outputs,labels)
+            loss_test += loss.item()
+    a = model.train()
+    return loss_test/len(test_data_loader)
+
+def training_loop(n_epochs,
+                 optimizer,
+                 model,
+                 loss_fn,
+                 train_data_loader,
+                 test_data_loader,
+                 config,
+                  device,
+                 verbose=False,best_loss=float('inf'),
+                 best_model_state=None):
+    
+    if verbose:
+        print("Training starting at {}".format(datetime.datetime.now()))
+    testLoss =  lossOnTestDataset(model,test_data_loader,device,loss_fn)
+    trainLoss = lossOnTestDataset(model,train_data_loader,device,loss_fn)
+    if verbose:
+        print("Test loss without training: {}".format(testLoss))
+    
+    df = pd.DataFrame({"epochs": [0],
+                       "seq_length": config["seq_length"],
+                       "n_cells": config["n_cells"],
+                       "hidden_size": config["hidden_size"],
+                       "num_layers": config["num_layers"],
+                      "learning_rate": config["learning_rate"],
+                      "batch_size": config["batch_size"],
+                      "train_loss": trainLoss,
+                      "test_loss": testLoss})
+
+    for epoch in range(1,n_epochs+1):
+        loss_train = 0
+        for imgs, labels, time in train_data_loader: # mini-batches with data loader, imgs is sequences of brain activity, labels is position of mouse
+            imgs = imgs.to(device=device) # batch x chan x 28 x 28 to batch x 28 x 28
+            labels = labels.to(device=device)
+            outputs = model(imgs)
+            loss = loss_fn(outputs,labels)
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            loss_train += loss.item()
+            
+        testLoss = lossOnTestDataset(model,test_data_loader,device,loss_fn)
+        if verbose:
+            print("{} Epoch: {}/{}, Training loss: {}, Testing loss: {}".format(datetime.datetime.now(),epoch,n_epochs,loss_train/len(train_data_loader), testLoss))
+        df1 = pd.DataFrame({"epochs": [epoch],
+                       "seq_length": config["seq_length"],
+                       "n_cells": config["n_cells"],
+                       "hidden_size": config["hidden_size"],
+                       "num_layers": config["num_layers"],
+                      "learning_rate": config["learning_rate"],
+                      "batch_size": config["batch_size"],
+                      "train_loss": loss_train/len(train_data_loader),
+                           "test_loss": testLoss})
+        
+        df = pd.concat([df, df1])
+
+        if testLoss < best_loss:
+            best_loss = testLoss
+            best_model_state = model.state_dict()
+
+    return df, best_model_state
+
+
+# Function to load the train and test data
+def load_position_ifr_dataset(dirPath="../data"):
+    fn = os.path.join(dirPath,"train_ifr.pkl")
+    ifrTime = pickle.load(open(fn,"rb"))
+    train_ifr, train_time = ifrTime
+
+    fn = os.path.join(dirPath,"train_pose.pkl")
+    train_pose = pickle.load(open(fn,"rb"))
+
+    fn = os.path.join(dirPath,"test_ifr.pkl")
+    ifrTime = pickle.load(open(fn,"rb"))
+    test_ifr, test_time = ifrTime
+
+    fn = os.path.join(dirPath,"test_pose.pkl")
+    test_pose = pickle.load(open(fn,"rb"))
+    
+    fn = os.path.join(dirPath,"grid_cell_parameters.pkl")
+    grid_param = pickle.load(open(fn,"rb"))
+    print("train_ifr.shape:",train_ifr.shape)
+    print("train_pose.shape:",train_pose.shape)
+
+    oriRigid = np.stack([p["grid_param_model_rigid"]["orientation"] for p in grid_param])
+    oriFlexible = np.stack([p["grid_param_model_flexible"]["orientation"] for p in grid_param])
+    periodRigid = np.stack([p["grid_param_model_rigid"]["period"] for p in grid_param])
+    periodFlexible = np.stack([p["grid_param_model_flexible"]["period"] for p in grid_param])
+
+
+    grid_param = {
+    "period": np.median(periodFlexible,axis=0),
+    "orientation": np.median(oriFlexible,axis=0),
+    }
+    
+    
+    if train_ifr.shape[0] != train_pose.shape[0]:
+        raise ValueError("Problem with the shape of ifr and pose object")
+    if test_ifr.shape[0] != test_pose.shape[0]:
+        raise ValueError("Problem with the shape of ifr and pose object")
+        
+    train_grid_coord = poseToGridSpace(pose=train_pose[:,1:3],
+                             period=grid_param["period"],
+                             orientation=grid_param["orientation"])
+    
+    
+    test_grid_coord = poseToGridSpace(pose=test_pose[:,1:3],
+                             period=grid_param["period"],
+                             orientation=grid_param["orientation"])
+    
+    
+    
+    return train_ifr, train_pose, train_grid_coord, test_ifr, test_pose, test_grid_coord, grid_param, train_time, test_time
+
+
+
+def gridSpaceToMovementPath(grid_coord,grid_period=40,orientation=0):
+    """
+    Function to go from grid cell coordinate (2 angles) to movement path
+
+    gridSpace is a representation of the internal activity of the grid manifold. It has 3 dimensions that are circular. But we are only using 2 dimensions here
+    When the active representation in grid space changes, we can transform this into movement in the real world.
+    We don't know the absolute position of the animal, but we can recreate the movement path.
+
+    We use 2 of the 3 components of the grid space to reconstruct the movement path.
+    For each time sample, we know the movement in the grid cells space along these 2 directions.
+    If we know that the mouse moved 2 cm along the first grid vector, the mouse can be at any position on a line that passes by 2*unitvector0 and is perpendicular to unitvector0
+    If we know that the mouse moved 3 cm along the second grid vector, the mouse can be at any position on a line that passes by 3*unitvector1 and is perpendicular to unitvector1
+    We just find the intersection of the two lines to know the movement of the mouse in x,y space.
+
+
+    Arguments:
+    grid_coord: is a 2D numpy array with the cos and sin component of the first 2 axes of the grid (4 columns)
+    """
+
+    # get angle from the cos and sin components
+    ga0 = np.arctan2(grid_coord[:,1],grid_coord[:,0])
+    ga1 = np.arctan2(grid_coord[:,3],grid_coord[:,2])
+
+    # get how many cm per radian
+
+    cm_per_radian = grid_period/(2*np.pi)
+
+    # get the movement along the 3 vector of the grid
+    dga0=mvtFromAngle(ga0,cm_per_radian[0])
+    dga1=mvtFromAngle(ga1,cm_per_radian[1])
+
+
+    # unit vector and unit vector perpendicular to the grid module orientation vectors
+    uv0 = np.array([[np.cos(orientation[0]),np.sin(orientation[0])]]) # unit vector v0
+    puv0 = np.array([[np.cos(orientation[0]+np.pi/2),np.sin(orientation[0]+np.pi/2)]]) # unit vector perpendicular to uv0
+    uv1 = np.array([[np.cos(orientation[1]),np.sin(orientation[1])]]) # unit vector v1
+    puv1 = np.array([[np.cos(orientation[1]+np.pi/2),np.sin(orientation[1]+np.pi/2)]]) # unit vector perpendicular to uv1
+
+    # two points in the x,y coordinate system that are on a line perpendicular to v0
+    p1 = np.expand_dims(dga0,1)*uv0 # x,y coordinate of movement along v0
+    p2 = p1+ puv0 # a second x,y coordinate that is p1 plus a vector perpendicular to uv0
+
+    # two points in the x,y coordinate system that are on a line perpendicular to v1
+    p3 = np.expand_dims(dga1,1)*uv1 # coordinate of the point 1 on line 1
+    p4 = p3+ puv1 # coordinate of point 2 on line 1
+
+    # find the intersection between 2 lines, using 2 points that are part of line 1 and 2 points that are part of line 2
+    # https://en.wikipedia.org/wiki/Line%E2%80%93line_intersection
+    px_num = (p1[:,0]*p2[:,1] - p1[:,1]*p2[:,0]) * (p3[:,0]-p4[:,0]) - (p1[:,0]-p2[:,0]) * (p3[:,0]*p4[:,1] - p3[:,1]*p4[:,0]) 
+    px_den = ((p1[:,0]-p2[:,0]) * (p3[:,1]-p4[:,1]) - (p1[:,1]-p2[:,1]) * (p3[:,0]-p4[:,0]))
+    reconstructedX = px_num/px_den
+    py_num = (p1[:,0]*p2[:,1] - p1[:,1]*p2[:,0]) * (p3[:,1]-p4[:,1]) - (p1[:,1]-p2[:,1]) * (p3[:,0]*p4[:,1] - p3[:,1]*p4[:,0]) 
+    py_den = ((p1[:,0]-p2[:,0]) * (p3[:,1]-p4[:,1]) - (p1[:,1]-p2[:,1]) * (p3[:,0]-p4[:,0]))
+    reconstructedY = py_num/py_den
+
+    return np.stack([reconstructedX,reconstructedY]).T
+
+
+
+def mvtFromAngle(ga,cm_per_radian):
+    """
+    Go from an angle in the one grid coordinate (one of the 3 axes) to a change in position along this axis
+    """
+    dga = np.diff(ga,prepend=np.nan) # this is the change in the angle
+    dga = np.where(dga>np.pi,dga-2*np.pi,dga) # correct for positive jumps because of circular data
+    dga = np.where(dga<-np.pi,dga+2*np.pi,dga) # correct for negative jumps
+    dga = dga* cm_per_radian # transform from change in angle to change in cm
+    return dga
