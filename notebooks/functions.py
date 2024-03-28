@@ -29,7 +29,15 @@ def plotMap(ax,myMap,title="",titleY=0.95,titleFontSize=10,transpose=True,cmap="
         ax.imshow(myMap,origin="lower",cmap=cmap,interpolation=None, vmin=vmin,alpha=alpha)
     ax.set_title(title,y=titleY,fontsize=titleFontSize)
     ax.set_aspect('equal', adjustable='box')
-    ax.axis('off')
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.spines['bottom'].set_visible(False)
+    ax.spines['left'].set_visible(False)
+    ax.set_xticklabels([])
+    ax.set_yticklabels([])
+    ax.set_xticks([])
+    ax.set_yticks([])
+    #ax.axis('off')
 
 
 class RigidGridCellModel(torch.nn.Module):
